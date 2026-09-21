@@ -6,7 +6,7 @@ from typing import Literal
 
 import torch
 
-from qkern.quantization import QuantizedWeights, dequantize
+from qkern.quantization import Granularity, QuantizedWeights, dequantize, expand_scales
 
 try:
     from . import _C
@@ -69,75 +69,83 @@ def fp16_gemv_vec2(W: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
 def int8_gemv_fused(
     W_q: torch.Tensor,
     x: torch.Tensor,
-    scale: torch.Tensor | float,
+    scales: torch.Tensor | float,
+    *,
+    granularity: Granularity = "tensor",
+    group_size: int | None = None,
 ) -> torch.Tensor:
     """
-    Fused INT8 weight-only GEMV (per-tensor scale).
-
-    Computes ``y[n] = scale * sum_k float(W_q[n,k]) * float(x[k])`` on device
-    without writing a dequantized ``[N, K]`` weight matrix to global memory.
+    Fused INT8 weight-only GEMV.
 
     Parameters
     ----------
     W_q:
-        Contiguous CUDA ``int8`` tensor ``[N, K]``.
+        Contiguous CUDA ``int8`` ``[N, K]``.
     x:
-        Contiguous CUDA ``float16`` tensor ``[K]``.
-    scale:
-        Per-tensor positive scale (Python float or 0-dim / 1-element tensor).
+        Contiguous CUDA ``float16`` ``[K]``.
+    scales:
+        - tensor: scalar / 0-dim / numel-1
+        - channel: ``[N]`` or ``[N, 1]``
+        - group: ``[N, ceil(K / group_size)]``
+    granularity:
+        ``"tensor"`` | ``"channel"`` | ``"group"``.
+    group_size:
+        Required for ``"group"`` (32 / 64 / 128 / 256 typically).
     """
     _require_ext()
-    if isinstance(scale, float):
-        scale_t = torch.tensor(scale, dtype=torch.float32)
-    elif isinstance(scale, torch.Tensor):
-        scale_t = scale
+    if isinstance(scales, float):
+        scales_t = torch.tensor(scales, dtype=torch.float32)
+    elif isinstance(scales, torch.Tensor):
+        scales_t = scales
     else:
-        raise TypeError("int8_gemv_fused: scale must be float or torch.Tensor")
-    return _C.int8_gemv_fused(W_q, x, scale_t)
+        raise TypeError("int8_gemv_fused: scales must be float or torch.Tensor")
+    if granularity == "group" and group_size is None:
+        raise ValueError("group_size is required when granularity='group'")
+    return _C.int8_gemv_fused(W_q, x, scales_t, granularity, group_size)
 
 
 def int8_gemv_unfused(
     W_q: torch.Tensor,
     x: torch.Tensor,
-    scale: torch.Tensor | float,
+    scales: torch.Tensor | float,
     *,
+    granularity: Granularity = "tensor",
+    group_size: int | None = None,
     fp16_variant: Fp16GemvVariantName = "vec2",
 ) -> torch.Tensor:
     """
-    Unfused INT8 path: materialize FP16 dequantized weights, then FP16 GEMV.
-
-    ``W_hat = float(W_q) * scale`` (cast to FP16), then ``fp16_gemv(W_hat, x)``.
-    This intentionally writes a full ``[N, K]`` FP16 tensor — the fusion baseline.
+    Unfused INT8 path: expand scales, materialize FP16 ``Ŵ``, then FP16 GEMV.
     """
-    if isinstance(scale, float):
-        scale_f = scale
-    elif isinstance(scale, torch.Tensor):
-        scale_f = float(scale.detach().float().reshape(-1)[0].item())
-    else:
-        raise TypeError("int8_gemv_unfused: scale must be float or torch.Tensor")
-
     if W_q.device.type != "cuda" or x.device.type != "cuda":
         raise ValueError("int8_gemv_unfused: W_q and x must be CUDA tensors")
-
-    # Materialize dequantized weights in global memory (the cost fusion avoids).
-    W_hat = (W_q.float() * scale_f).to(dtype=torch.float16).contiguous()
+    n, k = int(W_q.shape[0]), int(W_q.shape[1])
+    if isinstance(scales, float):
+        scales_t = torch.tensor(scales, dtype=torch.float32, device=W_q.device)
+    else:
+        scales_t = scales.to(device=W_q.device, dtype=torch.float32)
+    scales_nk = expand_scales(
+        scales_t, n=n, k=k, granularity=granularity, group_size=group_size
+    )
+    W_hat = (W_q.float() * scales_nk).to(dtype=torch.float16).contiguous()
     return fp16_gemv(W_hat, x.contiguous(), variant=fp16_variant)
 
 
 def int8_gemv_fused_from_qw(qw: QuantizedWeights, x: torch.Tensor) -> torch.Tensor:
-    """Convenience: fused GEMV from a per-tensor ``QuantizedWeights`` object."""
+    """Fused GEMV from a Phase-1 ``QuantizedWeights`` (INT8, any supported granularity)."""
     if qw.bits != 8:
         raise ValueError(f"expected INT8 QuantizedWeights, got bits={qw.bits}")
-    if qw.granularity != "tensor":
-        raise ValueError(
-            f"fused INT8 kernel currently supports per-tensor only, got {qw.granularity}"
-        )
     W_q = qw.qweight
     if not W_q.is_cuda:
         W_q = W_q.cuda()
     if not x.is_cuda:
         x = x.cuda()
-    return int8_gemv_fused(W_q.contiguous(), x.contiguous().half(), qw.scales)
+    return int8_gemv_fused(
+        W_q.contiguous(),
+        x.contiguous().half(),
+        qw.scales,
+        granularity=qw.granularity,
+        group_size=qw.group_size,
+    )
 
 
 def int8_gemv_unfused_from_qw(

@@ -63,10 +63,7 @@ torch::Tensor fp16_gemv_cuda(torch::Tensor W, torch::Tensor x, const std::string
   return y;
 }
 
-void validate_int8_gemv_inputs(
-    const torch::Tensor& W_q,
-    const torch::Tensor& x,
-    const torch::Tensor& scale) {
+void validate_int8_wq_x(const torch::Tensor& W_q, const torch::Tensor& x) {
   TORCH_CHECK(W_q.is_cuda(), "int8_gemv_fused: W_q must be a CUDA tensor");
   TORCH_CHECK(x.is_cuda(), "int8_gemv_fused: x must be a CUDA tensor");
   TORCH_CHECK(W_q.device() == x.device(), "int8_gemv_fused: W_q and x must be on the same device");
@@ -83,32 +80,78 @@ void validate_int8_gemv_inputs(
   TORCH_CHECK(W_q.is_contiguous(), "int8_gemv_fused: W_q must be contiguous");
   TORCH_CHECK(x.is_contiguous(), "int8_gemv_fused: x must be contiguous");
   TORCH_CHECK(W_q.size(0) > 0 && W_q.size(1) > 0, "int8_gemv_fused: N and K must be positive");
-
-  // Per-tensor scale: scalar tensor (any device; we read a host float).
-  TORCH_CHECK(scale.numel() == 1, "int8_gemv_fused: per-tensor scale must have numel==1, got ", scale.numel());
-  TORCH_CHECK(
-      scale.scalar_type() == at::kFloat || scale.scalar_type() == at::kHalf ||
-          scale.scalar_type() == at::kDouble,
-      "int8_gemv_fused: scale must be floating, got ",
-      scale.scalar_type());
 }
 
-torch::Tensor int8_gemv_fused_cuda(torch::Tensor W_q, torch::Tensor x, torch::Tensor scale) {
-  validate_int8_gemv_inputs(W_q, x, scale);
+torch::Tensor int8_gemv_fused_cuda(
+    torch::Tensor W_q,
+    torch::Tensor x,
+    torch::Tensor scales,
+    const std::string& granularity,
+    c10::optional<int64_t> group_size_opt) {
+  validate_int8_wq_x(W_q, x);
+
+  TORCH_CHECK(
+      scales.scalar_type() == at::kFloat || scales.scalar_type() == at::kHalf ||
+          scales.scalar_type() == at::kDouble,
+      "int8_gemv_fused: scales must be floating, got ",
+      scales.scalar_type());
 
   const c10::cuda::CUDAGuard device_guard(W_q.device());
   const int N = static_cast<int>(W_q.size(0));
   const int K = static_cast<int>(W_q.size(1));
-  const float scale_f = scale.to(at::kFloat).reshape({}).item<float>();
-
   auto y = torch::empty({N}, x.options().dtype(at::kFloat));
 
   const auto* dW = W_q.data_ptr<std::int8_t>();
   const auto* dx = reinterpret_cast<const __half*>(x.data_ptr<at::Half>());
   float* dy = y.data_ptr<float>();
-
   cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-  qkern::launch_int8_gemv_per_tensor_fused(dW, dx, dy, scale_f, N, K, stream);
+
+  if (granularity == "tensor") {
+    TORCH_CHECK(scales.numel() == 1, "int8_gemv_fused: tensor scales must have numel==1, got ", scales.numel());
+    const float scale_f = scales.to(at::kFloat).reshape({}).item<float>();
+    qkern::launch_int8_gemv_per_tensor_fused(dW, dx, dy, scale_f, N, K, stream);
+  } else if (granularity == "channel") {
+    auto s = scales.to(at::kFloat).contiguous();
+    TORCH_CHECK(
+        s.numel() == N && (s.dim() == 1 || (s.dim() == 2 && s.size(1) == 1)),
+        "int8_gemv_fused: channel scales must be [N] or [N,1], got ",
+        s.sizes());
+    if (!s.is_cuda()) {
+      s = s.to(W_q.device());
+    } else {
+      TORCH_CHECK(s.device() == W_q.device(), "int8_gemv_fused: scales device mismatch");
+    }
+    s = s.reshape({N}).contiguous();
+    qkern::launch_int8_gemv_per_channel_fused(dW, dx, dy, s.data_ptr<float>(), N, K, stream);
+  } else if (granularity == "group") {
+    TORCH_CHECK(group_size_opt.has_value(), "int8_gemv_fused: group_size required for granularity='group'");
+    const int group_size = static_cast<int>(group_size_opt.value());
+    TORCH_CHECK(group_size > 0, "int8_gemv_fused: group_size must be > 0");
+    const int num_groups = (K + group_size - 1) / group_size;
+    auto s = scales.to(at::kFloat).contiguous();
+    TORCH_CHECK(
+        s.dim() == 2 && s.size(0) == N && s.size(1) == num_groups,
+        "int8_gemv_fused: group scales must be [N, ceil(K/gs)] = [",
+        N,
+        ", ",
+        num_groups,
+        "], got ",
+        s.sizes());
+    if (!s.is_cuda()) {
+      s = s.to(W_q.device());
+    } else {
+      TORCH_CHECK(s.device() == W_q.device(), "int8_gemv_fused: scales device mismatch");
+    }
+    s = s.contiguous();
+    qkern::launch_int8_gemv_per_group_fused(
+        dW, dx, dy, s.data_ptr<float>(), N, K, group_size, stream);
+  } else {
+    TORCH_CHECK(
+        false,
+        "int8_gemv_fused: unknown granularity '",
+        granularity,
+        "' (expected 'tensor', 'channel', or 'group')");
+  }
 
   C10_CUDA_CHECK(cudaGetLastError());
   return y;
@@ -128,8 +171,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def(
       "int8_gemv_fused",
       &int8_gemv_fused_cuda,
-      "Fused INT8 weight-only GEMV with per-tensor scale (CUDA)",
+      "Fused INT8 weight-only GEMV (tensor / channel / group)",
       pybind11::arg("W_q"),
       pybind11::arg("x"),
-      pybind11::arg("scale"));
+      pybind11::arg("scales"),
+      pybind11::arg("granularity") = "tensor",
+      pybind11::arg("group_size") = pybind11::none());
 }

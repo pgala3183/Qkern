@@ -146,3 +146,35 @@ Ŵ = q * scale ≈ [[1.5118, -3.0000]]
 q = [-8, 7]  →  low=0x8, high=0x7  →  byte = 0x78
 unpack → [-8, 7]
 ```
+
+## Fused INT8 CUDA GEMV (implemented)
+
+API:
+
+```python
+from qkern import quantize_int8, int8_gemv_fused_from_qw
+
+qw = quantize_int8(W, granularity="group", group_size=128)
+y = int8_gemv_fused_from_qw(qw, x.half())  # CUDA, FP32 y
+```
+
+Scale layouts consumed by the fused kernels:
+
+| Granularity | `scales` layout | Kernel use |
+|-------------|-----------------|------------|
+| tensor | scalar | `y[n] = s * Σ Wq[n,k]·x[k]` |
+| channel | `[N]` (also accepts `[N,1]`) | `y[n] = s[n] * Σ Wq[n,k]·x[k]` |
+| group | `[N, ceil(K/gs)]` | `g=⌊k/gs⌋`, `y[n]=Σ s[n,g]·Wq[n,k]·x[k]` |
+
+Partial last groups when `K % group_size ≠ 0` are required and tested.
+
+### Design notes (correctness-first; not aggressively optimized)
+
+| Topic | Behavior |
+|-------|----------|
+| Extra memory loads | Channel: one scale per row (amortized). Group: one scale load per `k` (or reuse if compiler keeps `s` in a register within a group — not assumed). |
+| Indexing overhead | Group path does `g = k / group_size` each iteration (integer divide). |
+| Cache behavior | Scales for a row are contiguous in `[num_groups]`; neighboring threads touch different rows → scale traffic is stride-`num_groups`. Weights remain row-strided across the warp (same coalescing issue as naive FP16). |
+| Expected tradeoffs | Finer scales (group) usually **lower quantization error**, but **more scale traffic / indexing** than tensor. Latency is measured; no granularity is declared “best.” |
+
+See also `docs/experiments/int8_gemv_fused.md` and `benchmarks/benchmark_int8_granularity.py`.

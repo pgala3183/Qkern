@@ -40,8 +40,8 @@ Distinguish logical bandwidth from Nsight Compute hardware counters.
 | 2 | **done** | Naive handwritten CUDA FP16 GEMV + baseline benchmark |
 | 2.1 | **done** | Variant framework + first opt: `x_smem` activation caching |
 | 2.2 | **done** | Safe `__half2` vectorized loads (`vec2`) |
-| 3 | **done** | INT8 weight-only fused GEMV (per-tensor) |
-| 4+ | pending | INT8 per-channel/group, INT4 fused, further opts, autotuner |
+| 3 | **done** | INT8 fused GEMV (per-tensor / channel / group) |
+| 4+ | pending | INT4 fused, further opts, autotuner |
 
 ## Phase 2 / 2.1 (CUDA FP16 GEMV)
 
