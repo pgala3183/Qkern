@@ -45,6 +45,7 @@ ext_modules = [
             "src/kernels/fp16_gemv_dispatch.cpp",
             "src/kernels/int8_gemv.cu",
             "src/kernels/int4_gemv.cu",
+            "src/kernels/int4_dequant.cu",
         ],
         include_dirs=[str(ROOT / "include")],
         extra_compile_args={

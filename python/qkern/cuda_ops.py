@@ -207,6 +207,52 @@ def int4_gemv_fused(
     return _C.int4_gemv_fused(W_q, x, scales_t, k, granularity, group_size)
 
 
+def int4_dequant(
+    W_q: torch.Tensor,
+    scales: torch.Tensor | float,
+    *,
+    K: int | None = None,
+    granularity: Granularity = "tensor",
+    group_size: int | None = None,
+) -> torch.Tensor:
+    """
+    CUDA dequantize packed INT4 → dense FP16 ``[N, K]``.
+
+    Building block for the unfused path (materializes ``Ŵ`` in global memory).
+    """
+    _require_ext()
+    if isinstance(scales, float):
+        scales_t = torch.tensor(scales, dtype=torch.float32)
+    elif isinstance(scales, torch.Tensor):
+        scales_t = scales
+    else:
+        raise TypeError("int4_dequant: scales must be float or torch.Tensor")
+    if granularity == "group" and group_size is None:
+        raise ValueError("group_size is required when granularity='group'")
+    if K is None:
+        raise ValueError("int4_dequant: K (logical inner dim) is required")
+    return _C.int4_dequant(W_q, scales_t, int(K), granularity, group_size)
+
+
+def int4_dequant_from_qw(qw: QuantizedWeights) -> torch.Tensor:
+    """CUDA dequant from packed INT4 ``QuantizedWeights`` → FP16 ``[N, K]``."""
+    if qw.bits != 4:
+        raise ValueError(f"expected INT4 QuantizedWeights, got bits={qw.bits}")
+    if not qw.packed:
+        raise ValueError("int4_dequant_from_qw expects packed INT4 (pack=True)")
+    W_q = qw.qweight
+    if not W_q.is_cuda:
+        W_q = W_q.cuda()
+    _, k = qw.shape
+    return int4_dequant(
+        W_q.contiguous(),
+        qw.scales,
+        K=k,
+        granularity=qw.granularity,
+        group_size=qw.group_size,
+    )
+
+
 def int4_gemv_unfused(
     W_q: torch.Tensor,
     x: torch.Tensor,
@@ -218,24 +264,21 @@ def int4_gemv_unfused(
     fp16_variant: Fp16GemvVariantName = "vec2",
 ) -> torch.Tensor:
     """
-    Unfused INT4 path: unpack + expand scales → FP16 ``Ŵ`` → FP16 GEMV.
-    """
-    from qkern.quantization import unpack_int4
+    Unfused INT4 path: CUDA dequant → FP16 ``Ŵ`` → FP16 GEMV.
 
+    Prefer ``int4_dequant`` + ``fp16_gemv`` when timing stages separately.
+    """
     if W_q.device.type != "cuda" or x.device.type != "cuda":
         raise ValueError("int4_gemv_unfused: W_q and x must be CUDA tensors")
     k = int(x.shape[0]) if K is None else int(K)
-    n = int(W_q.shape[0])
-    q = unpack_int4(W_q.cpu(), k=k).to(device=W_q.device)
-    if isinstance(scales, float):
-        scales_t = torch.tensor(scales, dtype=torch.float32, device=W_q.device)
-    else:
-        scales_t = scales.to(device=W_q.device, dtype=torch.float32)
-    scales_nk = expand_scales(
-        scales_t, n=n, k=k, granularity=granularity, group_size=group_size
+    W_hat = int4_dequant(
+        W_q,
+        scales,
+        K=k,
+        granularity=granularity,
+        group_size=group_size,
     )
-    W_hat = (q.float() * scales_nk).to(dtype=torch.float16).contiguous()
-    return fp16_gemv(W_hat, x.contiguous(), variant=fp16_variant)
+    return fp16_gemv(W_hat.contiguous(), x.contiguous(), variant=fp16_variant)
 
 
 def int4_gemv_fused_from_qw(qw: QuantizedWeights, x: torch.Tensor) -> torch.Tensor:
@@ -266,12 +309,10 @@ def int4_gemv_unfused_from_qw(
     *,
     fp16_variant: Fp16GemvVariantName = "vec2",
 ) -> torch.Tensor:
-    """Unfused path via explicit ``dequantize`` then CUDA FP16 GEMV."""
+    """Unfused path: CUDA ``int4_dequant`` then CUDA FP16 GEMV."""
     if qw.bits != 4:
         raise ValueError(f"expected INT4 QuantizedWeights, got bits={qw.bits}")
-    W_hat = dequantize(qw, dtype=torch.float16)
-    if not W_hat.is_cuda:
-        W_hat = W_hat.cuda()
     if not x.is_cuda:
         x = x.cuda()
+    W_hat = int4_dequant_from_qw(qw)
     return fp16_gemv(W_hat.contiguous(), x.contiguous().half(), variant=fp16_variant)

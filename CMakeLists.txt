@@ -51,6 +51,7 @@ add_library(qkern_fp16_gemv STATIC
   src/kernels/fp16_gemv_dispatch.cpp
   src/kernels/int8_gemv.cu
   src/kernels/int4_gemv.cu
+  src/kernels/int4_dequant.cu
 )
 target_include_directories(qkern_fp16_gemv PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(qkern_fp16_gemv PUBLIC CUDA::cudart)

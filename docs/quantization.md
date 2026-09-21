@@ -254,3 +254,18 @@ than assume.
 
 Compare: `benchmarks/benchmark_int4_granularity.py` and
 `docs/experiments/int4_gemv_granularity.md`.
+
+### Fused vs unfused (CUDA dequant)
+
+Unfused path for experiments:
+
+```python
+W_hat = int4_dequant_from_qw(qw)   # CUDA → FP16 [N,K]
+y = fp16_gemv(W_hat, x)            # or int4_gemv_unfused_from_qw
+```
+
+Fused path: `int4_gemv_fused_from_qw` (no `Ŵ` in global memory).
+
+Rigorous timing of dequant / GEMV / total unfused / fused:
+`benchmarks/benchmark_fused_vs_unfused.py` and
+`docs/experiments/fused_vs_unfused_int4.md`. Fusion is **not** assumed to win.

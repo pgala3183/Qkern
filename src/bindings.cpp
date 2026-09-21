@@ -1,4 +1,5 @@
 #include "qkern/fp16_gemv.cuh"
+#include "qkern/int4_dequant.cuh"
 #include "qkern/int4_gemv.cuh"
 #include "qkern/int8_gemv.cuh"
 
@@ -259,10 +260,98 @@ torch::Tensor int4_gemv_fused_cuda(
   return y;
 }
 
+torch::Tensor int4_dequant_cuda(
+    torch::Tensor W_q,
+    torch::Tensor scales,
+    int64_t K,
+    const std::string& granularity,
+    c10::optional<int64_t> group_size_opt) {
+  TORCH_CHECK(W_q.is_cuda(), "int4_dequant: W_q must be a CUDA tensor");
+  TORCH_CHECK(
+      W_q.scalar_type() == at::kByte,
+      "int4_dequant: W_q must be uint8 packed INT4, got ",
+      W_q.scalar_type());
+  TORCH_CHECK(W_q.dim() == 2, "int4_dequant: W_q must be [N, ceil(K/2)], got shape ", W_q.sizes());
+  TORCH_CHECK(K > 0, "int4_dequant: K must be positive");
+  const int64_t packed_k = (K + 1) / 2;
+  TORCH_CHECK(
+      W_q.size(1) == packed_k,
+      "int4_dequant: W_q.shape[1]=",
+      W_q.size(1),
+      " != ceil(K/2)=",
+      packed_k);
+  TORCH_CHECK(W_q.is_contiguous(), "int4_dequant: W_q must be contiguous");
+  TORCH_CHECK(W_q.size(0) > 0, "int4_dequant: N must be positive");
+  TORCH_CHECK(
+      scales.scalar_type() == at::kFloat || scales.scalar_type() == at::kHalf ||
+          scales.scalar_type() == at::kDouble,
+      "int4_dequant: scales must be floating, got ",
+      scales.scalar_type());
+
+  const c10::cuda::CUDAGuard device_guard(W_q.device());
+  const int N = static_cast<int>(W_q.size(0));
+  const int K_i = static_cast<int>(K);
+  auto W_hat = torch::empty({N, K_i}, W_q.options().dtype(at::kHalf));
+
+  const auto* dW = W_q.data_ptr<std::uint8_t>();
+  auto* dOut = reinterpret_cast<__half*>(W_hat.data_ptr<at::Half>());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+  if (granularity == "tensor") {
+    TORCH_CHECK(scales.numel() == 1, "int4_dequant: tensor scales must have numel==1, got ", scales.numel());
+    const float scale_f = scales.to(at::kFloat).reshape({}).item<float>();
+    qkern::launch_int4_dequant_per_tensor(dW, dOut, scale_f, N, K_i, stream);
+  } else if (granularity == "channel") {
+    auto s = scales.to(at::kFloat).contiguous();
+    TORCH_CHECK(
+        s.numel() == N && (s.dim() == 1 || (s.dim() == 2 && s.size(1) == 1)),
+        "int4_dequant: channel scales must be [N] or [N,1], got ",
+        s.sizes());
+    if (!s.is_cuda()) {
+      s = s.to(W_q.device());
+    } else {
+      TORCH_CHECK(s.device() == W_q.device(), "int4_dequant: scales device mismatch");
+    }
+    s = s.reshape({N}).contiguous();
+    qkern::launch_int4_dequant_per_channel(dW, dOut, s.data_ptr<float>(), N, K_i, stream);
+  } else if (granularity == "group") {
+    TORCH_CHECK(group_size_opt.has_value(), "int4_dequant: group_size required for granularity='group'");
+    const int group_size = static_cast<int>(group_size_opt.value());
+    TORCH_CHECK(group_size > 0, "int4_dequant: group_size must be > 0");
+    const int num_groups = (K_i + group_size - 1) / group_size;
+    auto s = scales.to(at::kFloat).contiguous();
+    TORCH_CHECK(
+        s.dim() == 2 && s.size(0) == N && s.size(1) == num_groups,
+        "int4_dequant: group scales must be [N, ceil(K/gs)] = [",
+        N,
+        ", ",
+        num_groups,
+        "], got ",
+        s.sizes());
+    if (!s.is_cuda()) {
+      s = s.to(W_q.device());
+    } else {
+      TORCH_CHECK(s.device() == W_q.device(), "int4_dequant: scales device mismatch");
+    }
+    s = s.contiguous();
+    qkern::launch_int4_dequant_per_group(
+        dW, dOut, s.data_ptr<float>(), N, K_i, group_size, stream);
+  } else {
+    TORCH_CHECK(
+        false,
+        "int4_dequant: unknown granularity '",
+        granularity,
+        "' (expected 'tensor', 'channel', or 'group')");
+  }
+
+  C10_CUDA_CHECK(cudaGetLastError());
+  return W_hat;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.doc() = "QKern CUDA extension (FP16 / INT8 / INT4 fused GEMV)";
+  m.doc() = "QKern CUDA extension (FP16 / INT8 / INT4 fused GEMV + INT4 dequant)";
   m.def(
       "fp16_gemv",
       &fp16_gemv_cuda,
@@ -285,6 +374,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "Fused INT4 weight-only GEMV (packed; tensor / channel / group)",
       pybind11::arg("W_q"),
       pybind11::arg("x"),
+      pybind11::arg("scales"),
+      pybind11::arg("K"),
+      pybind11::arg("granularity") = "tensor",
+      pybind11::arg("group_size") = pybind11::none());
+  m.def(
+      "int4_dequant",
+      &int4_dequant_cuda,
+      "Dequantize packed INT4 to FP16 [N,K] (unfused path building block)",
+      pybind11::arg("W_q"),
       pybind11::arg("scales"),
       pybind11::arg("K"),
       pybind11::arg("granularity") = "tensor",
