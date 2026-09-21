@@ -7,7 +7,7 @@ import torch
 from qkern import (
     dequantize,
     error_summary,
-    fp16_gemv,
+    fp16_gemv_ref,
     pack_int4,
     quantize_int4,
     quantize_int8,
@@ -19,7 +19,7 @@ def main() -> None:
     print("=== FP16 GEMV ===")
     W = torch.tensor([[1.0, 2.0, 3.0], [-1.0, 0.5, 0.0]], dtype=torch.float16)
     x = torch.tensor([2.0, 1.0, -1.0], dtype=torch.float16)
-    y = fp16_gemv(W, x)
+    y = fp16_gemv_ref(W, x)
     print(f"W=\n{W.float()}")
     print(f"x={x.float().tolist()}")
     print(f"y={y.tolist()}")
@@ -43,8 +43,8 @@ def main() -> None:
     W4 = torch.randn(4, 256)
     x4 = torch.randn(256)
     qw4 = quantize_int4(W4, granularity="group", group_size=128, pack=True)
-    y4 = fp16_gemv(dequantize(qw4, dtype=torch.float16), x4.half())
-    y_fp = fp16_gemv(W4.half(), x4.half())
+    y4 = fp16_gemv_ref(dequantize(qw4, dtype=torch.float16), x4.half())
+    y_fp = fp16_gemv_ref(W4.half(), x4.half())
     print(f"qweight_shape={tuple(qw4.qweight.shape)} scales_shape={tuple(qw4.scales.shape)}")
     print(f"GEMV errors vs FP16: {error_summary(y4, y_fp)}")
 

@@ -37,7 +37,23 @@ Distinguish logical bandwidth from Nsight Compute hardware counters.
 |-------|--------|-------------|
 | 0 | **done** | Repo scaffold, CUDA smoke, NVRTC check, Python diagnostics |
 | 1 | **done** | PyTorch FP16 GEMV reference, INT8/INT4 quantize+pack, tests, docs |
-| 2+ | pending | Handwritten CUDA kernels, autotuner, benchmarks |
+| 2 | **done** | Naive handwritten CUDA FP16 GEMV + baseline benchmark |
+| 2.1 | **done** | Variant framework + first opt: `x_smem` activation caching |
+| 3+ | pending | Further single-step FP16 opts, INT8/INT4 CUDA, autotuner |
+
+## Phase 2 / 2.1 (CUDA FP16 GEMV)
+
+```powershell
+.\scripts\build_ext.ps1
+python -m pytest -q
+python benchmarks/benchmark_baselines.py
+python benchmarks/benchmark_fp16_gemv_opt.py
+```
+
+- `fp16_gemv_naive` — preserved Phase-2 baseline
+- `fp16_gemv_x_smem` — shared-memory tiles of `x` only ([experiment](docs/experiments/fp16_gemv_x_smem.md))
+- `fp16_gemv(..., variant=...)` — dispatch
+- Design notes: [docs/kernel_design.md](docs/kernel_design.md)
 
 ## Phase 1 (PyTorch references)
 
@@ -48,7 +64,6 @@ python examples/phase1_examples.py
 ```
 
 See [docs/quantization.md](docs/quantization.md) for scale/rounding/packing definitions.
-No custom CUDA kernels in this phase.
 
 
 ## Measured environment (Phase 0)
@@ -66,13 +81,13 @@ Captured on the development machine used for the initial smoke run
 | nvcc | 13.3.73 |
 | NVRTC | 13.3 (runtime compile smoke OK) |
 | Python | 3.11.4 |
-| PyTorch | 2.12.1+cpu (`torch.cuda.is_available() == False`) |
+| PyTorch | 2.11.0+cu128 (`torch.cuda.is_available() == True` after Phase 2 setup) |
+
 
 **Known toolchain quirks on this host**
 
-- System `CUDA_PATH` / `CUDA_PATH_V13_3` may point at `bin` or `libnvvp`. The Phase 0 script overrides them to the real toolkit root for the build process.
-- A CUDA-enabled PyTorch wheel is still required before **GPU** PyTorch paths.
-  Phase 1 reference tests run on CPU PyTorch.
+- System `CUDA_PATH` / `CUDA_PATH_V13_3` may point at `bin` or `libnvvp`. Build scripts override them to the real toolkit root for the build process.
+- CUDA PyTorch wheels are large; if `C:` is low on space, set `TEMP`/`TMP` to another drive during `pip install`.
 
 ## Quick start (Phase 0)
 

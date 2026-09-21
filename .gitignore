@@ -14,6 +14,8 @@ out/
 *.ilk
 *.exe
 !scripts/**
+*.pyd
+*.so
 
 # Python
 .venv/

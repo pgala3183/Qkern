@@ -40,5 +40,18 @@ set_target_properties(qkern_nvrtc_smoke PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
 )
 
-message(STATUS "QKern Phase 0: CUDAToolkit_ROOT=${CUDAToolkit_ROOT}")
-message(STATUS "QKern Phase 0: CUDA architectures=${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "QKern: CUDAToolkit_ROOT=${CUDAToolkit_ROOT}")
+message(STATUS "QKern: CUDA architectures=${CMAKE_CUDA_ARCHITECTURES}")
+
+# FP16 GEMV variants (naive baseline + optimizations).
+add_library(qkern_fp16_gemv STATIC
+  src/kernels/fp16_gemv_naive.cu
+  src/kernels/fp16_gemv_x_smem.cu
+  src/kernels/fp16_gemv_dispatch.cpp
+)
+target_include_directories(qkern_fp16_gemv PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(qkern_fp16_gemv PUBLIC CUDA::cudart)
+set_target_properties(qkern_fp16_gemv PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  POSITION_INDEPENDENT_CODE ON
+)

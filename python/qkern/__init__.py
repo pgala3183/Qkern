@@ -24,13 +24,35 @@ from qkern.quantization import (
     unpack_int4,
 )
 from qkern.reference import (
-    fp16_gemv,
     gemv_from_dequant,
     int4_gemv_reference,
     int8_gemv_reference,
 )
+from qkern.reference import fp16_gemv as fp16_gemv_ref
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
+
+try:
+    from qkern.cuda_ops import (
+        fp16_gemv,
+        fp16_gemv_naive,
+        fp16_gemv_x_smem,
+        is_cuda_extension_available,
+    )
+except ImportError:  # pragma: no cover - unbuilt extension
+
+    def fp16_gemv(*_args, **_kwargs):  # type: ignore[misc]
+        raise ImportError(
+            "qkern CUDA extension is not built. "
+            "Run: python setup.py build_ext --inplace"
+        )
+
+    fp16_gemv_naive = fp16_gemv  # type: ignore[assignment]
+    fp16_gemv_x_smem = fp16_gemv  # type: ignore[assignment]
+
+    def is_cuda_extension_available() -> bool:
+        return False
+
 
 __all__ = [
     "INT4_QMAX",
@@ -45,10 +67,14 @@ __all__ = [
     "error_summary",
     "expand_scales",
     "fp16_gemv",
+    "fp16_gemv_naive",
+    "fp16_gemv_ref",
+    "fp16_gemv_x_smem",
     "gemv_from_dequant",
     "int4_gemv_reference",
     "int4_representable_values",
     "int8_gemv_reference",
+    "is_cuda_extension_available",
     "max_abs_error",
     "mean_abs_error",
     "pack_int4",
