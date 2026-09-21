@@ -41,8 +41,8 @@ Distinguish logical bandwidth from Nsight Compute hardware counters.
 | 2.1 | **done** | Variant framework + first opt: `x_smem` activation caching |
 | 2.2 | **done** | Safe `__half2` vectorized loads (`vec2`) |
 | 3 | **done** | INT8 fused GEMV (per-tensor / channel / group) |
-| 4 | **done** | INT4 fused GEMV (packed, per-tensor v1) |
-| 5+ | pending | INT4 channel/group, further opts, autotuner |
+| 4 | **done** | INT4 fused GEMV (packed; tensor / channel / group) |
+| 5+ | pending | Further opts, autotuner |
 
 ## Phase 2 / 2.1 (CUDA FP16 GEMV)
 
@@ -57,7 +57,7 @@ python benchmarks/benchmark_fp16_gemv_opt.py
 - `fp16_gemv_x_smem` — shared-memory tiles of `x` only ([experiment](docs/experiments/fp16_gemv_x_smem.md))
 - `fp16_gemv_vec2` — safe `__half2` loads + scalar fallback ([experiment](docs/experiments/fp16_gemv_vec2.md))
 - `int8_gemv_fused` / `int8_gemv_unfused` — INT8 fused ([experiment](docs/experiments/int8_gemv_fused.md))
-- `int4_gemv_fused` / `int4_gemv_unfused` — packed INT4 fused, per-tensor v1 ([experiment](docs/experiments/int4_gemv_fused.md))
+- `int4_gemv_fused` / `int4_gemv_unfused` — packed INT4 fused (tensor/channel/group) ([experiment](docs/experiments/int4_gemv_granularity.md))
 - `fp16_gemv(..., variant=...)` — FP16 dispatch
 - Design notes: [docs/kernel_design.md](docs/kernel_design.md)
 

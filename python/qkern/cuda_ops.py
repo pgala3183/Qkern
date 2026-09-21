@@ -172,6 +172,7 @@ def int4_gemv_fused(
     *,
     K: int | None = None,
     granularity: Granularity = "tensor",
+    group_size: int | None = None,
 ) -> torch.Tensor:
     """
     Fused INT4 weight-only GEMV (packed storage, Phase-1 nibble layout).
@@ -183,23 +184,27 @@ def int4_gemv_fused(
     x:
         Contiguous CUDA ``float16`` ``[K]``.
     scales:
-        Per-tensor: scalar / 0-dim / numel-1 (v1).
+        - tensor: scalar / 0-dim / numel-1
+        - channel: ``[N]`` or ``[N, 1]``
+        - group: ``[N, ceil(K / group_size)]``
     K:
         Logical inner dimension. Defaults to ``x.shape[0]``.
     granularity:
-        ``"tensor"`` only in v1.
+        ``"tensor"`` | ``"channel"`` | ``"group"``.
+    group_size:
+        Required for ``"group"`` (32 / 64 / 128 / 256 typically; primary 128).
     """
     _require_ext()
-    if granularity != "tensor":
-        raise ValueError("int4_gemv_fused v1 supports granularity='tensor' only")
     if isinstance(scales, float):
         scales_t = torch.tensor(scales, dtype=torch.float32)
     elif isinstance(scales, torch.Tensor):
         scales_t = scales
     else:
         raise TypeError("int4_gemv_fused: scales must be float or torch.Tensor")
+    if granularity == "group" and group_size is None:
+        raise ValueError("group_size is required when granularity='group'")
     k = int(x.shape[0]) if K is None else int(K)
-    return _C.int4_gemv_fused(W_q, x, scales_t, k, granularity)
+    return _C.int4_gemv_fused(W_q, x, scales_t, k, granularity, group_size)
 
 
 def int4_gemv_unfused(
@@ -234,15 +239,11 @@ def int4_gemv_unfused(
 
 
 def int4_gemv_fused_from_qw(qw: QuantizedWeights, x: torch.Tensor) -> torch.Tensor:
-    """Fused GEMV from packed INT4 ``QuantizedWeights`` (per-tensor v1)."""
+    """Fused GEMV from packed INT4 ``QuantizedWeights`` (any supported granularity)."""
     if qw.bits != 4:
         raise ValueError(f"expected INT4 QuantizedWeights, got bits={qw.bits}")
     if not qw.packed:
         raise ValueError("int4_gemv_fused_from_qw expects packed INT4 (pack=True)")
-    if qw.granularity != "tensor":
-        raise ValueError(
-            f"int4_gemv_fused v1 supports granularity='tensor' only, got {qw.granularity!r}"
-        )
     W_q = qw.qweight
     if not W_q.is_cuda:
         W_q = W_q.cuda()
@@ -254,7 +255,8 @@ def int4_gemv_fused_from_qw(qw: QuantizedWeights, x: torch.Tensor) -> torch.Tens
         x.contiguous().half(),
         qw.scales,
         K=k,
-        granularity="tensor",
+        granularity=qw.granularity,
+        group_size=qw.group_size,
     )
 
 

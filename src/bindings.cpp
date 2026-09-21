@@ -188,7 +188,8 @@ torch::Tensor int4_gemv_fused_cuda(
     torch::Tensor x,
     torch::Tensor scales,
     int64_t K,
-    const std::string& granularity) {
+    const std::string& granularity,
+    c10::optional<int64_t> group_size_opt) {
   validate_int4_wq_x(W_q, x, K);
 
   TORCH_CHECK(
@@ -211,12 +212,47 @@ torch::Tensor int4_gemv_fused_cuda(
     TORCH_CHECK(scales.numel() == 1, "int4_gemv_fused: tensor scales must have numel==1, got ", scales.numel());
     const float scale_f = scales.to(at::kFloat).reshape({}).item<float>();
     qkern::launch_int4_gemv_per_tensor_fused(dW, dx, dy, scale_f, N, K_i, stream);
+  } else if (granularity == "channel") {
+    auto s = scales.to(at::kFloat).contiguous();
+    TORCH_CHECK(
+        s.numel() == N && (s.dim() == 1 || (s.dim() == 2 && s.size(1) == 1)),
+        "int4_gemv_fused: channel scales must be [N] or [N,1], got ",
+        s.sizes());
+    if (!s.is_cuda()) {
+      s = s.to(W_q.device());
+    } else {
+      TORCH_CHECK(s.device() == W_q.device(), "int4_gemv_fused: scales device mismatch");
+    }
+    s = s.reshape({N}).contiguous();
+    qkern::launch_int4_gemv_per_channel_fused(dW, dx, dy, s.data_ptr<float>(), N, K_i, stream);
+  } else if (granularity == "group") {
+    TORCH_CHECK(group_size_opt.has_value(), "int4_gemv_fused: group_size required for granularity='group'");
+    const int group_size = static_cast<int>(group_size_opt.value());
+    TORCH_CHECK(group_size > 0, "int4_gemv_fused: group_size must be > 0");
+    const int num_groups = (K_i + group_size - 1) / group_size;
+    auto s = scales.to(at::kFloat).contiguous();
+    TORCH_CHECK(
+        s.dim() == 2 && s.size(0) == N && s.size(1) == num_groups,
+        "int4_gemv_fused: group scales must be [N, ceil(K/gs)] = [",
+        N,
+        ", ",
+        num_groups,
+        "], got ",
+        s.sizes());
+    if (!s.is_cuda()) {
+      s = s.to(W_q.device());
+    } else {
+      TORCH_CHECK(s.device() == W_q.device(), "int4_gemv_fused: scales device mismatch");
+    }
+    s = s.contiguous();
+    qkern::launch_int4_gemv_per_group_fused(
+        dW, dx, dy, s.data_ptr<float>(), N, K_i, group_size, stream);
   } else {
     TORCH_CHECK(
         false,
         "int4_gemv_fused: unknown granularity '",
         granularity,
-        "' (v1 supports 'tensor' only)");
+        "' (expected 'tensor', 'channel', or 'group')");
   }
 
   C10_CUDA_CHECK(cudaGetLastError());
@@ -246,10 +282,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def(
       "int4_gemv_fused",
       &int4_gemv_fused_cuda,
-      "Fused INT4 weight-only GEMV (packed; per-tensor v1)",
+      "Fused INT4 weight-only GEMV (packed; tensor / channel / group)",
       pybind11::arg("W_q"),
       pybind11::arg("x"),
       pybind11::arg("scales"),
       pybind11::arg("K"),
-      pybind11::arg("granularity") = "tensor");
+      pybind11::arg("granularity") = "tensor",
+      pybind11::arg("group_size") = pybind11::none());
 }

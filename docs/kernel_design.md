@@ -126,46 +126,45 @@ Notes:
 
 ---
 
-## Fused INT4 GEMV (primary kernel, v1)
+## Fused INT4 GEMV (primary kernel)
 
 ### Operation
 
 ```
+# per-tensor / channel (scale outside or once per row):
 y[n] = scale * Σ_k float(q[n,k]) * float(x[k])
+
+# per-group:
+y[n] = Σ_k scales[n, floor(k/gs)] * float(q[n,k]) * float(x[k])
 ```
 
-- `q` is signed INT4 in `[-8, 7]`, stored packed two-per-byte (Phase-1 layout).
+- `q` is signed INT4 in `[-8, 7]`, packed two-per-byte (Phase-1 layout).
 - `x` is FP16; accumulation and `y` are FP32.
-- Dequantization is **fused**: no FP16/FP32 weight matrix is written to global
-  memory.
+- Primary config: **W4A16, group_size=128**. Also: 32, 64, 256.
+- Dequantization is **fused**.
 
 ### Thread mapping (correctness-first)
 
-Same as Phase-2 FP16: **one thread per output row**, 256 threads/block.
-No tiling, no shared-memory scale/weight staging, no vectorized packed loads yet.
+**One thread per output row**, 256 threads/block. Helpers are factored so later
+passes can optimize:
 
-### Per-thread work
+| Hook | Current | Later |
+|------|---------|-------|
+| Scale loads | Per-weight (group) / once (channel/tensor) | Stage in smem / registers |
+| Group index | `k / group_size` | Shift when `gs` is power-of-two |
+| Weight loads | Scalar `uint8` | Vectorized multi-byte |
+| Activation loads | Scalar `__half` | `__half2` / smem broadcast |
+| Register / smem | None beyond locals | Tile K; cache `x` and row scales |
 
-For packed index `i = 0 .. ceil(K/2)-1`:
+### Per-weight group path
 
-1. Load `uint8` byte `p = W_q[n, i]`.
-2. `q_lo = sign_extend(p & 0xF)` → `k = 2*i`.
-3. `q_hi = sign_extend(p >> 4)` → `k = 2*i+1` (skipped if `k >= K`).
-4. `acc += float(q) * float(x[k])`.
-5. After the K loop: `y[n] = acc * scale`.
+1. Determine `g = floor(k / group_size)` (incomplete final groups OK).
+2. Load `scales[n, g]`.
+3. Sign-extend INT4.
+4. Dequantize in registers.
+5. Multiply by activation.
+6. Accumulate in FP32.
 
-### Memory vs compute tradeoff
-
-| Topic | Notes |
-|-------|--------|
-| Weight traffic | ~`N·ceil(K/2)` bytes vs `N·K·2` FP16 — packing is the bandwidth win. |
-| Unpacking | Extra integer ops per byte (mask, shift, sign-extend). |
-| Fusion | Avoids a second pass that would rewrite `N·K·2` dequantized bytes. |
-| Instruction pressure | More work per loaded byte than FP16 GEMV → can become instruction- or latency-bound even when logical weight bytes drop. |
-| Same structural limits as naive FP16 | Warp-strided row ownership; each thread reloads all of `x`. |
-
-Channel/group INT4 fused scales and tiling are **out of scope for v1**.
-
-API: `int4_gemv_fused` / `int4_gemv_fused_from_qw`. Design+quant notes also in
-[quantization.md](quantization.md). Measurements:
-[experiments/int4_gemv_fused.md](experiments/int4_gemv_fused.md).
+API: `int4_gemv_fused` / `int4_gemv_fused_from_qw`. See
+[quantization.md](quantization.md) and
+[experiments/int4_gemv_granularity.md](experiments/int4_gemv_granularity.md).

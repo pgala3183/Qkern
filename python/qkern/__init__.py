@@ -30,7 +30,7 @@ from qkern.reference import (
 )
 from qkern.reference import fp16_gemv as fp16_gemv_ref
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 try:
     from qkern.cuda_ops import (
