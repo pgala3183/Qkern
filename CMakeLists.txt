@@ -47,6 +47,7 @@ message(STATUS "QKern: CUDA architectures=${CMAKE_CUDA_ARCHITECTURES}")
 add_library(qkern_fp16_gemv STATIC
   src/kernels/fp16_gemv_naive.cu
   src/kernels/fp16_gemv_x_smem.cu
+  src/kernels/fp16_gemv_vec2.cu
   src/kernels/fp16_gemv_dispatch.cpp
 )
 target_include_directories(qkern_fp16_gemv PUBLIC ${CMAKE_SOURCE_DIR}/include)

@@ -19,6 +19,9 @@ void launch_fp16_gemv(
     case Fp16GemvVariant::XSmem:
       launch_fp16_gemv_x_smem(W, x, y, N, K, stream);
       return;
+    case Fp16GemvVariant::Vec2:
+      launch_fp16_gemv_vec2(W, x, y, N, K, stream);
+      return;
     default:
       throw std::invalid_argument("launch_fp16_gemv: unknown variant");
   }

@@ -94,8 +94,11 @@ y_ref = fp16_gemv_ref(W.cpu(), x.cpu())
 |---------|-----|-----------------|
 | `naive` | `fp16_gemv_naive` | Baseline (one thread/row, global `x`) |
 | `x_smem` | `fp16_gemv_x_smem` | Tile `x` through shared memory only |
+| `vec2` | `fp16_gemv_vec2` | Safe `__half2` loads + scalar fallback |
 
-Experiment write-up: [experiments/fp16_gemv_x_smem.md](experiments/fp16_gemv_x_smem.md).
+Experiment write-ups:
+- [experiments/fp16_gemv_x_smem.md](experiments/fp16_gemv_x_smem.md)
+- [experiments/fp16_gemv_vec2.md](experiments/fp16_gemv_vec2.md)
 
 Validation rejects CPU tensors, non-FP16 dtypes, non-contiguous layouts, and
 shape mismatches with clear errors.

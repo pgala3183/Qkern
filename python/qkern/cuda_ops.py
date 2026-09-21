@@ -11,7 +11,7 @@ try:
 except ImportError:  # pragma: no cover
     _C = None  # type: ignore[assignment]
 
-Fp16GemvVariantName = Literal["naive", "x_smem"]
+Fp16GemvVariantName = Literal["naive", "x_smem", "vec2"]
 
 
 def is_cuda_extension_available() -> bool:
@@ -32,8 +32,9 @@ def fp16_gemv(
     W, x:
         Contiguous CUDA ``float16`` tensors ``[N, K]`` and ``[K]``.
     variant:
-        ``"naive"`` — Phase-2 baseline (one thread per row, global ``x`` loads).
-        ``"x_smem"`` — same mapping with ``x`` tiled through shared memory.
+        ``"naive"`` — Phase-2 baseline.
+        ``"x_smem"`` — shared-memory tiles of ``x``.
+        ``"vec2"`` — safe ``__half2`` loads with scalar fallback.
     """
     if _C is None:
         raise ImportError(
@@ -52,3 +53,8 @@ def fp16_gemv_naive(W: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
 def fp16_gemv_x_smem(W: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     """Activation-caching optimization (shared-memory tiles of ``x``)."""
     return fp16_gemv(W, x, variant="x_smem")
+
+
+def fp16_gemv_vec2(W: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """Safe ``__half2`` vectorized loads with scalar fallback."""
+    return fp16_gemv(W, x, variant="vec2")

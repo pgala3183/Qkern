@@ -9,6 +9,7 @@ from qkern import (
     fp16_gemv,
     fp16_gemv_naive,
     fp16_gemv_ref,
+    fp16_gemv_vec2,
     fp16_gemv_x_smem,
     is_cuda_extension_available,
 )
@@ -19,24 +20,26 @@ requires_cuda = pytest.mark.skipif(
     reason="CUDA device + qkern._C extension required",
 )
 
+VARIANTS = ["naive", "x_smem", "vec2"]
+
 
 def _tol_for_shape(k: int) -> float:
     return max(5e-2, 2e-3 * (k ** 0.5))
 
 
 @requires_cuda
-@pytest.mark.parametrize("variant", ["naive", "x_smem"])
+@pytest.mark.parametrize("variant", VARIANTS)
 @pytest.mark.parametrize(
     "n,k",
     [
-        (1, 1),
-        (1, 8),
-        (4, 7),
-        (8, 32),
-        (16, 65),
+        (1, 1),  # small K
+        (1, 2),
+        (4, 7),  # odd / non-aligned-friendly K
+        (8, 32),  # aligned K
+        (16, 65),  # odd large-ish
         (64, 256),
         (128, 1024),
-        (256, 4096),
+        (256, 4096),  # large K
         (1024, 4096),
     ],
 )
@@ -57,13 +60,47 @@ def test_cuda_fp16_gemv_matches_reference(variant, n, k, seed):
 
 
 @requires_cuda
+@pytest.mark.parametrize("k", [1, 2, 3, 7, 8, 31, 32, 63, 64, 128, 257, 4096])
+def test_vec2_aligned_and_nonaligned_k(k):
+    """Aligned (even K) and non-aligned (odd K) coverage for vec2."""
+    torch.manual_seed(k)
+    n = 16
+    W_cpu = torch.randn(n, k, dtype=torch.float16)
+    x_cpu = torch.randn(k, dtype=torch.float16)
+    W = W_cpu.cuda().contiguous()
+    x = x_cpu.cuda().contiguous()
+    y_v = fp16_gemv_vec2(W, x)
+    y_ref = fp16_gemv_ref(W_cpu, x_cpu)
+    torch.cuda.synchronize()
+    # half2 convert path can differ slightly from pure scalar at large K.
+    assert max_abs_error(y_v.cpu(), y_ref) <= _tol_for_shape(k)
+
+
+@requires_cuda
+def test_vec2_misaligned_x_view_fallback():
+    """Force x to start at a 2-mod-4 address via a storage offset view."""
+    torch.manual_seed(0)
+    n, k = 32, 128
+    W = torch.randn(n, k, dtype=torch.float16, device="cuda").contiguous()
+    buf = torch.randn(k + 1, dtype=torch.float16, device="cuda")
+    x = buf[1:].contiguous()  # still contiguous; base may be 2B-aligned only
+    assert x.shape == (k,)
+    y_v = fp16_gemv_vec2(W, x)
+    y_n = fp16_gemv_naive(W, x)
+    torch.cuda.synchronize()
+    assert max_abs_error(y_v, y_n) < 1e-4
+
+
+@requires_cuda
 def test_variants_agree_on_small_example():
     W = torch.tensor([[1.0, 2.0, 3.0], [-1.0, 0.5, 0.0]], dtype=torch.float16, device="cuda")
     x = torch.tensor([2.0, 1.0, -1.0], dtype=torch.float16, device="cuda")
     y_n = fp16_gemv_naive(W, x)
     y_s = fp16_gemv_x_smem(W, x)
+    y_v = fp16_gemv_vec2(W, x)
     torch.cuda.synchronize()
     assert max_abs_error(y_n, y_s) < 1e-5
+    assert max_abs_error(y_n, y_v) < 1e-5
     assert y_n[0].item() == pytest.approx(1.0, abs=1e-3)
     assert y_n[1].item() == pytest.approx(-1.5, abs=1e-3)
 

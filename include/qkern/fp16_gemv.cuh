@@ -8,7 +8,8 @@ namespace qkern {
 // FP16 GEMV variants. Keep naive as the permanent Phase-2 baseline.
 enum class Fp16GemvVariant {
   Naive = 0,
-  XSmem = 1,  // activation (x) cached in shared memory — first optimization
+  XSmem = 1,  // activation (x) cached in shared memory
+  Vec2 = 2,   // safe __half2 loads + scalar fallback
 };
 
 inline const char* fp16_gemv_variant_name(Fp16GemvVariant v) {
@@ -17,6 +18,8 @@ inline const char* fp16_gemv_variant_name(Fp16GemvVariant v) {
       return "naive";
     case Fp16GemvVariant::XSmem:
       return "x_smem";
+    case Fp16GemvVariant::Vec2:
+      return "vec2";
     default:
       return "unknown";
   }
@@ -33,6 +36,15 @@ void launch_fp16_gemv_naive(
 
 // Same math; stages tiles of x in shared memory to cut redundant global x loads.
 void launch_fp16_gemv_x_smem(
+    const __half* W,
+    const __half* x,
+    float* y,
+    int N,
+    int K,
+    cudaStream_t stream = nullptr);
+
+// Safe __half2 vectorized loads when dual 4B alignment holds; else scalar.
+void launch_fp16_gemv_vec2(
     const __half* W,
     const __half* x,
     float* y,

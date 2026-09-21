@@ -31,7 +31,14 @@ qkern::Fp16GemvVariant parse_variant(const std::string& name) {
   if (name == "x_smem") {
     return qkern::Fp16GemvVariant::XSmem;
   }
-  TORCH_CHECK(false, "fp16_gemv: unknown variant '", name, "' (expected 'naive' or 'x_smem')");
+  if (name == "vec2") {
+    return qkern::Fp16GemvVariant::Vec2;
+  }
+  TORCH_CHECK(
+      false,
+      "fp16_gemv: unknown variant '",
+      name,
+      "' (expected 'naive', 'x_smem', or 'vec2')");
 }
 
 torch::Tensor fp16_gemv_cuda(torch::Tensor W, torch::Tensor x, const std::string& variant) {

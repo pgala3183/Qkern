@@ -30,12 +30,13 @@ from qkern.reference import (
 )
 from qkern.reference import fp16_gemv as fp16_gemv_ref
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 try:
     from qkern.cuda_ops import (
         fp16_gemv,
         fp16_gemv_naive,
+        fp16_gemv_vec2,
         fp16_gemv_x_smem,
         is_cuda_extension_available,
     )
@@ -49,6 +50,7 @@ except ImportError:  # pragma: no cover - unbuilt extension
 
     fp16_gemv_naive = fp16_gemv  # type: ignore[assignment]
     fp16_gemv_x_smem = fp16_gemv  # type: ignore[assignment]
+    fp16_gemv_vec2 = fp16_gemv  # type: ignore[assignment]
 
     def is_cuda_extension_available() -> bool:
         return False
@@ -69,6 +71,7 @@ __all__ = [
     "fp16_gemv",
     "fp16_gemv_naive",
     "fp16_gemv_ref",
+    "fp16_gemv_vec2",
     "fp16_gemv_x_smem",
     "gemv_from_dequant",
     "int4_gemv_reference",
