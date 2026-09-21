@@ -178,3 +178,78 @@ Partial last groups when `K % group_size ≠ 0` are required and tested.
 | Expected tradeoffs | Finer scales (group) usually **lower quantization error**, but **more scale traffic / indexing** than tensor. Latency is measured; no granularity is declared “best.” |
 
 See also `docs/experiments/int8_gemv_fused.md` and `benchmarks/benchmark_int8_granularity.py`.
+
+## Fused INT4 CUDA GEMV (implemented, per-tensor v1)
+
+Primary QKern kernel target: **weight-only INT4**, FP16 activations, FP32
+accumulation, **fused** dequantization (no dequantized `W` in global memory).
+
+### Packing (Phase-1)
+
+Two signed INT4 values in `[-8, 7]` share one `uint8` byte:
+
+| Nibble | Bits | Logical `K` index |
+|--------|------|-------------------|
+| low | `[3:0]` | `2*i` |
+| high | `[7:4]` | `2*i+1` (zero pad if `K` odd) |
+
+Storage is 4-bit two's complement (`stored = value & 0xF`). Fused kernels must
+match `pack_int4` / `unpack_int4`.
+
+### API
+
+```python
+from qkern import quantize_int4, int4_gemv_fused_from_qw
+
+qw = quantize_int4(W, granularity="tensor", pack=True)
+y = int4_gemv_fused_from_qw(qw, x.half())  # CUDA, FP32 y
+```
+
+`W_q` shape is `[N, ceil(K/2)]` (`uint8`). Logical `K` is taken from
+`qw.shape` / the activation length.
+
+v1 supports **per-tensor** scaling only (channel/group INT4 fused comes later).
+
+### Kernel steps (per output row)
+
+1. Load packed bytes from global memory.
+2. Extract low/high nibbles.
+3. Sign-extend to signed INT4 in `[-8, 7]`.
+4. Load the tensor scale.
+5. Dequantize in registers: `w = float(q) * scale` (folded as
+   `scale * Σ q·x` for per-tensor).
+6. Multiply by FP16 `x[k]` (promoted to FP32).
+7. Accumulate in FP32.
+
+Odd `K`: the final high nibble is padding and is skipped.
+
+### Why packing reduces memory traffic
+
+Logical weight bytes drop from `N·K·2` (FP16) or `N·K` (INT8) to about
+`N·ceil(K/2)` — roughly **4× less weight traffic than FP16** and **2× less than
+INT8**, before activation/output bytes. That is the main decode-GEMV motivation.
+
+### Unpacking overhead
+
+Each useful multiply needs nibble extract + sign-extend. That is extra integer
+work vs loading a ready FP16/INT8 value. Correctness-first kernels do this in
+the inner loop without vectorized byte loads or shared-memory staging.
+
+### Fused vs unfused dequant
+
+Unfused materializes an FP16 `Ŵ` (`N·K·2` bytes) then runs FP16 GEMV — packing
+savings are spent immediately. Fused keeps only packed INT4 + scales resident
+and dequantizes in registers, so the logical weight footprint stays at packed
+size.
+
+### Why INT4 can still be instruction-bound
+
+Lower traffic does **not** guarantee lower latency. Unpack + convert + scale
+raises arithmetic/integer instruction count per byte loaded. On a bandwidth-rich
+GPU, or when other bottlenecks dominate (strided row loads, redundant `x`
+traffic, launch overhead), the kernel can become **instruction- or latency-bound**
+while moving fewer weight bytes. Measure FP16 / INT8 / INT4 together; do not
+assume INT4 wins.
+
+Compare: `benchmarks/benchmark_fp16_int8_int4.py` and
+`docs/experiments/int4_gemv_fused.md`.

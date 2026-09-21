@@ -1,4 +1,5 @@
 #include "qkern/fp16_gemv.cuh"
+#include "qkern/int4_gemv.cuh"
 #include "qkern/int8_gemv.cuh"
 
 #include <torch/extension.h>
@@ -157,10 +158,75 @@ torch::Tensor int8_gemv_fused_cuda(
   return y;
 }
 
+void validate_int4_wq_x(const torch::Tensor& W_q, const torch::Tensor& x, int64_t K) {
+  TORCH_CHECK(W_q.is_cuda(), "int4_gemv_fused: W_q must be a CUDA tensor");
+  TORCH_CHECK(x.is_cuda(), "int4_gemv_fused: x must be a CUDA tensor");
+  TORCH_CHECK(W_q.device() == x.device(), "int4_gemv_fused: W_q and x must be on the same device");
+  TORCH_CHECK(
+      W_q.scalar_type() == at::kByte,
+      "int4_gemv_fused: W_q must be uint8 packed INT4, got ",
+      W_q.scalar_type());
+  TORCH_CHECK(x.scalar_type() == at::kHalf, "int4_gemv_fused: x must be float16, got ", x.scalar_type());
+  TORCH_CHECK(W_q.dim() == 2, "int4_gemv_fused: W_q must be [N, ceil(K/2)], got shape ", W_q.sizes());
+  TORCH_CHECK(x.dim() == 1, "int4_gemv_fused: x must be [K], got shape ", x.sizes());
+  TORCH_CHECK(K > 0, "int4_gemv_fused: K must be positive");
+  TORCH_CHECK(x.size(0) == K, "int4_gemv_fused: x.shape[0]=", x.size(0), " != K=", K);
+  const int64_t packed_k = (K + 1) / 2;
+  TORCH_CHECK(
+      W_q.size(1) == packed_k,
+      "int4_gemv_fused: W_q.shape[1]=",
+      W_q.size(1),
+      " != ceil(K/2)=",
+      packed_k);
+  TORCH_CHECK(W_q.is_contiguous(), "int4_gemv_fused: W_q must be contiguous");
+  TORCH_CHECK(x.is_contiguous(), "int4_gemv_fused: x must be contiguous");
+  TORCH_CHECK(W_q.size(0) > 0, "int4_gemv_fused: N must be positive");
+}
+
+torch::Tensor int4_gemv_fused_cuda(
+    torch::Tensor W_q,
+    torch::Tensor x,
+    torch::Tensor scales,
+    int64_t K,
+    const std::string& granularity) {
+  validate_int4_wq_x(W_q, x, K);
+
+  TORCH_CHECK(
+      scales.scalar_type() == at::kFloat || scales.scalar_type() == at::kHalf ||
+          scales.scalar_type() == at::kDouble,
+      "int4_gemv_fused: scales must be floating, got ",
+      scales.scalar_type());
+
+  const c10::cuda::CUDAGuard device_guard(W_q.device());
+  const int N = static_cast<int>(W_q.size(0));
+  const int K_i = static_cast<int>(K);
+  auto y = torch::empty({N}, x.options().dtype(at::kFloat));
+
+  const auto* dW = W_q.data_ptr<std::uint8_t>();
+  const auto* dx = reinterpret_cast<const __half*>(x.data_ptr<at::Half>());
+  float* dy = y.data_ptr<float>();
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+  if (granularity == "tensor") {
+    TORCH_CHECK(scales.numel() == 1, "int4_gemv_fused: tensor scales must have numel==1, got ", scales.numel());
+    const float scale_f = scales.to(at::kFloat).reshape({}).item<float>();
+    qkern::launch_int4_gemv_per_tensor_fused(dW, dx, dy, scale_f, N, K_i, stream);
+  } else {
+    TORCH_CHECK(
+        false,
+        "int4_gemv_fused: unknown granularity '",
+        granularity,
+        "' (v1 supports 'tensor' only)");
+  }
+
+  C10_CUDA_CHECK(cudaGetLastError());
+  return y;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.doc() = "QKern CUDA extension (FP16 GEMV variants + INT8 fused GEMV)";
+  m.doc() = "QKern CUDA extension (FP16 / INT8 / INT4 fused GEMV)";
   m.def(
       "fp16_gemv",
       &fp16_gemv_cuda,
@@ -177,4 +243,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       pybind11::arg("scales"),
       pybind11::arg("granularity") = "tensor",
       pybind11::arg("group_size") = pybind11::none());
+  m.def(
+      "int4_gemv_fused",
+      &int4_gemv_fused_cuda,
+      "Fused INT4 weight-only GEMV (packed; per-tensor v1)",
+      pybind11::arg("W_q"),
+      pybind11::arg("x"),
+      pybind11::arg("scales"),
+      pybind11::arg("K"),
+      pybind11::arg("granularity") = "tensor");
 }

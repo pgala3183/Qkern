@@ -38,12 +38,13 @@ ext_modules = [
     CUDAExtension(
         name="qkern._C",
         sources=[
-            str(ROOT / "src" / "bindings.cpp"),
-            str(ROOT / "src" / "kernels" / "fp16_gemv_naive.cu"),
-            str(ROOT / "src" / "kernels" / "fp16_gemv_x_smem.cu"),
-            str(ROOT / "src" / "kernels" / "fp16_gemv_vec2.cu"),
-            str(ROOT / "src" / "kernels" / "fp16_gemv_dispatch.cpp"),
-            str(ROOT / "src" / "kernels" / "int8_gemv.cu"),
+            "src/bindings.cpp",
+            "src/kernels/fp16_gemv_naive.cu",
+            "src/kernels/fp16_gemv_x_smem.cu",
+            "src/kernels/fp16_gemv_vec2.cu",
+            "src/kernels/fp16_gemv_dispatch.cpp",
+            "src/kernels/int8_gemv.cu",
+            "src/kernels/int4_gemv.cu",
         ],
         include_dirs=[str(ROOT / "include")],
         extra_compile_args={

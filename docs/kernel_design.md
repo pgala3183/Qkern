@@ -1,6 +1,8 @@
-# QKern kernel design — Phase 2 naive FP16 GEMV
+# QKern kernel design
 
-## Operation
+## Phase 2 naive FP16 GEMV
+
+### Operation
 
 ```
 y = W x
@@ -9,7 +11,7 @@ x ∈ R^{K}     (FP16)
 y ∈ R^{N}     (FP32 accumulator / output)
 ```
 
-## Thread mapping
+### Thread mapping
 
 The Phase 2 kernel is intentionally the simplest useful mapping:
 
@@ -21,7 +23,7 @@ The Phase 2 kernel is intentionally the simplest useful mapping:
 No warps specialize on tiles. No shared-memory staging. No vectorized loads.
 No `__hfma` / warp reductions / tensor cores.
 
-## Memory access pattern
+### Memory access pattern
 
 For a fixed thread `n`:
 
@@ -44,7 +46,7 @@ bytes ≈ N·K·sizeof(FP16) + N·K·sizeof(FP16)  (W + per-thread x reads)
 
 Caches may reduce `x` traffic in practice; the kernel does not rely on that.
 
-## Why this implementation is intentionally naive
+### Why this implementation is intentionally naive
 
 Phase 2 exists to create a **correct, interview-explainable CUDA baseline**
 before optimization:
@@ -57,10 +59,10 @@ before optimization:
 | No autotuning | Fixed 256 threads/block |
 | FP32 `float` accum | Matches reference math; still simple |
 
-Optimized variants (Phase 3+) should keep this file as the baseline and add new
-kernels beside it rather than rewriting history.
+Optimized variants should keep this baseline and add new kernels beside it
+rather than rewriting history.
 
-## Expected bottlenecks (hypothesis — measure later)
+### Expected bottlenecks (hypothesis — measure later)
 
 Decode-like GEMV is typically **memory-bandwidth / memory-latency bound**, not
 FLOP bound. For this naive kernel specifically, expect:
@@ -75,7 +77,7 @@ These are hypotheses to confirm with latency benchmarks and, later, Nsight
 Compute. Phase 2 benchmarks record median CUDA-event latency only; they do
 **not** claim the custom kernel is faster than cuBLAS/PyTorch.
 
-## Python API
+### Python API
 
 ```python
 import torch
@@ -88,7 +90,7 @@ y1 = fp16_gemv(W, x, variant="x_smem")     # first optimization only
 y_ref = fp16_gemv_ref(W.cpu(), x.cpu())
 ```
 
-### Variant framework
+#### Variant framework
 
 | Variant | API | Change vs naive |
 |---------|-----|-----------------|
@@ -103,7 +105,7 @@ Experiment write-ups:
 Validation rejects CPU tensors, non-FP16 dtypes, non-contiguous layouts, and
 shape mismatches with clear errors.
 
-## Measured Phase 2 latency snapshot (GTX 1650)
+### Measured Phase 2 latency snapshot (GTX 1650)
 
 CUDA-event median latency (ms), warmup=10, iters=50. **Not** an optimization claim;
 the naive kernel is expected to lag highly tuned cuBLAS paths on many shapes.
@@ -121,3 +123,49 @@ Notes:
 - PyTorch paths return FP16; qkern returns FP32 (FP32 accumulation).
 - Mid-size rows show the expected naive-kernel gap (strided `W` + redundant `x` traffic).
 - Full JSON/CSV: `benchmarks/results/` (local; gitignored).
+
+---
+
+## Fused INT4 GEMV (primary kernel, v1)
+
+### Operation
+
+```
+y[n] = scale * Σ_k float(q[n,k]) * float(x[k])
+```
+
+- `q` is signed INT4 in `[-8, 7]`, stored packed two-per-byte (Phase-1 layout).
+- `x` is FP16; accumulation and `y` are FP32.
+- Dequantization is **fused**: no FP16/FP32 weight matrix is written to global
+  memory.
+
+### Thread mapping (correctness-first)
+
+Same as Phase-2 FP16: **one thread per output row**, 256 threads/block.
+No tiling, no shared-memory scale/weight staging, no vectorized packed loads yet.
+
+### Per-thread work
+
+For packed index `i = 0 .. ceil(K/2)-1`:
+
+1. Load `uint8` byte `p = W_q[n, i]`.
+2. `q_lo = sign_extend(p & 0xF)` → `k = 2*i`.
+3. `q_hi = sign_extend(p >> 4)` → `k = 2*i+1` (skipped if `k >= K`).
+4. `acc += float(q) * float(x[k])`.
+5. After the K loop: `y[n] = acc * scale`.
+
+### Memory vs compute tradeoff
+
+| Topic | Notes |
+|-------|--------|
+| Weight traffic | ~`N·ceil(K/2)` bytes vs `N·K·2` FP16 — packing is the bandwidth win. |
+| Unpacking | Extra integer ops per byte (mask, shift, sign-extend). |
+| Fusion | Avoids a second pass that would rewrite `N·K·2` dequantized bytes. |
+| Instruction pressure | More work per loaded byte than FP16 GEMV → can become instruction- or latency-bound even when logical weight bytes drop. |
+| Same structural limits as naive FP16 | Warp-strided row ownership; each thread reloads all of `x`. |
+
+Channel/group INT4 fused scales and tiling are **out of scope for v1**.
+
+API: `int4_gemv_fused` / `int4_gemv_fused_from_qw`. Design+quant notes also in
+[quantization.md](quantization.md). Measurements:
+[experiments/int4_gemv_fused.md](experiments/int4_gemv_fused.md).
