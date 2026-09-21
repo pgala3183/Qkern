@@ -190,8 +190,16 @@ torch::Tensor int4_gemv_fused_cuda(
     torch::Tensor scales,
     int64_t K,
     const std::string& granularity,
-    c10::optional<int64_t> group_size_opt) {
+    c10::optional<int64_t> group_size_opt,
+    const std::string& config_name) {
   validate_int4_wq_x(W_q, x, K);
+
+  qkern::Int4GemvConfigId config_id = qkern::Int4GemvConfigId::Default;
+  TORCH_CHECK(
+      qkern::parse_int4_gemv_config_id(config_name, &config_id),
+      "int4_gemv_fused: unknown config '",
+      config_name,
+      "' (expected 'default', 'bn128_bk128_v1_s1', or 'bn256_bk256_v4_s2')");
 
   TORCH_CHECK(
       scales.scalar_type() == at::kFloat || scales.scalar_type() == at::kHalf ||
@@ -212,7 +220,7 @@ torch::Tensor int4_gemv_fused_cuda(
   if (granularity == "tensor") {
     TORCH_CHECK(scales.numel() == 1, "int4_gemv_fused: tensor scales must have numel==1, got ", scales.numel());
     const float scale_f = scales.to(at::kFloat).reshape({}).item<float>();
-    qkern::launch_int4_gemv_per_tensor_fused(dW, dx, dy, scale_f, N, K_i, stream);
+    qkern::launch_int4_gemv_per_tensor_fused(dW, dx, dy, scale_f, N, K_i, config_id, stream);
   } else if (granularity == "channel") {
     auto s = scales.to(at::kFloat).contiguous();
     TORCH_CHECK(
@@ -225,7 +233,8 @@ torch::Tensor int4_gemv_fused_cuda(
       TORCH_CHECK(s.device() == W_q.device(), "int4_gemv_fused: scales device mismatch");
     }
     s = s.reshape({N}).contiguous();
-    qkern::launch_int4_gemv_per_channel_fused(dW, dx, dy, s.data_ptr<float>(), N, K_i, stream);
+    qkern::launch_int4_gemv_per_channel_fused(
+        dW, dx, dy, s.data_ptr<float>(), N, K_i, config_id, stream);
   } else if (granularity == "group") {
     TORCH_CHECK(group_size_opt.has_value(), "int4_gemv_fused: group_size required for granularity='group'");
     const int group_size = static_cast<int>(group_size_opt.value());
@@ -247,7 +256,7 @@ torch::Tensor int4_gemv_fused_cuda(
     }
     s = s.contiguous();
     qkern::launch_int4_gemv_per_group_fused(
-        dW, dx, dy, s.data_ptr<float>(), N, K_i, group_size, stream);
+        dW, dx, dy, s.data_ptr<float>(), N, K_i, group_size, config_id, stream);
   } else {
     TORCH_CHECK(
         false,
@@ -258,6 +267,27 @@ torch::Tensor int4_gemv_fused_cuda(
 
   C10_CUDA_CHECK(cudaGetLastError());
   return y;
+}
+
+pybind11::list int4_gemv_list_configs_cuda() {
+  pybind11::list out;
+  for (qkern::Int4GemvConfigId id : {
+           qkern::Int4GemvConfigId::Default,
+           qkern::Int4GemvConfigId::Bn128Bk128V1S1,
+           qkern::Int4GemvConfigId::Bn256Bk256V4S2,
+       }) {
+    const auto info = qkern::int4_gemv_config_info(id);
+    pybind11::dict d;
+    d["name"] = info.name;
+    d["BLOCK_M"] = info.block_m;
+    d["BLOCK_N"] = info.block_n;
+    d["BLOCK_K"] = info.block_k;
+    d["VEC_SIZE"] = info.vec_size;
+    d["NUM_STAGES"] = info.num_stages;
+    d["is_default"] = info.is_default;
+    out.append(d);
+  }
+  return out;
 }
 
 torch::Tensor int4_dequant_cuda(
@@ -371,13 +401,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def(
       "int4_gemv_fused",
       &int4_gemv_fused_cuda,
-      "Fused INT4 weight-only GEMV (packed; tensor / channel / group)",
+      "Fused INT4 weight-only GEMV (packed; compile-time configs)",
       pybind11::arg("W_q"),
       pybind11::arg("x"),
       pybind11::arg("scales"),
       pybind11::arg("K"),
       pybind11::arg("granularity") = "tensor",
-      pybind11::arg("group_size") = pybind11::none());
+      pybind11::arg("group_size") = pybind11::none(),
+      pybind11::arg("config") = "default");
+  m.def(
+      "int4_gemv_list_configs",
+      &int4_gemv_list_configs_cuda,
+      "List compile-time INT4 GEMV kernel configurations");
   m.def(
       "int4_dequant",
       &int4_dequant_cuda,

@@ -30,7 +30,7 @@ from qkern.reference import (
 )
 from qkern.reference import fp16_gemv as fp16_gemv_ref
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 try:
     from qkern.cuda_ops import (
@@ -42,6 +42,7 @@ try:
         int4_dequant_from_qw,
         int4_gemv_fused,
         int4_gemv_fused_from_qw,
+        int4_gemv_list_configs,
         int4_gemv_unfused,
         int4_gemv_unfused_from_qw,
         int8_gemv_fused,
@@ -72,6 +73,9 @@ except ImportError:  # pragma: no cover - unbuilt extension
     int4_dequant = fp16_gemv  # type: ignore[assignment]
     int4_dequant_from_qw = fp16_gemv  # type: ignore[assignment]
 
+    def int4_gemv_list_configs() -> list:  # type: ignore[misc]
+        raise ImportError("qkern CUDA extension is not built.")
+
     def is_cuda_extension_available() -> bool:
         return False
 
@@ -98,6 +102,7 @@ __all__ = [
     "int4_dequant_from_qw",
     "int4_gemv_fused",
     "int4_gemv_fused_from_qw",
+    "int4_gemv_list_configs",
     "int4_gemv_reference",
     "int4_gemv_unfused",
     "int4_gemv_unfused_from_qw",

@@ -173,6 +173,7 @@ def int4_gemv_fused(
     K: int | None = None,
     granularity: Granularity = "tensor",
     group_size: int | None = None,
+    config: str = "default",
 ) -> torch.Tensor:
     """
     Fused INT4 weight-only GEMV (packed storage, Phase-1 nibble layout).
@@ -193,6 +194,9 @@ def int4_gemv_fused(
         ``"tensor"`` | ``"channel"`` | ``"group"``.
     group_size:
         Required for ``"group"`` (32 / 64 / 128 / 256 typically; primary 128).
+    config:
+        Compile-time kernel configuration name (see ``int4_gemv_list_configs``).
+        ``"default"`` preserves the original scalar / no-smem path.
     """
     _require_ext()
     if isinstance(scales, float):
@@ -204,7 +208,13 @@ def int4_gemv_fused(
     if granularity == "group" and group_size is None:
         raise ValueError("group_size is required when granularity='group'")
     k = int(x.shape[0]) if K is None else int(K)
-    return _C.int4_gemv_fused(W_q, x, scales_t, k, granularity, group_size)
+    return _C.int4_gemv_fused(W_q, x, scales_t, k, granularity, group_size, config)
+
+
+def int4_gemv_list_configs() -> list[dict]:
+    """Return compile-time INT4 GEMV configs (BLOCK_M/N/K, VEC_SIZE, NUM_STAGES)."""
+    _require_ext()
+    return list(_C.int4_gemv_list_configs())
 
 
 def int4_dequant(
@@ -281,7 +291,12 @@ def int4_gemv_unfused(
     return fp16_gemv(W_hat.contiguous(), x.contiguous(), variant=fp16_variant)
 
 
-def int4_gemv_fused_from_qw(qw: QuantizedWeights, x: torch.Tensor) -> torch.Tensor:
+def int4_gemv_fused_from_qw(
+    qw: QuantizedWeights,
+    x: torch.Tensor,
+    *,
+    config: str = "default",
+) -> torch.Tensor:
     """Fused GEMV from packed INT4 ``QuantizedWeights`` (any supported granularity)."""
     if qw.bits != 4:
         raise ValueError(f"expected INT4 QuantizedWeights, got bits={qw.bits}")
@@ -300,6 +315,7 @@ def int4_gemv_fused_from_qw(qw: QuantizedWeights, x: torch.Tensor) -> torch.Tens
         K=k,
         granularity=qw.granularity,
         group_size=qw.group_size,
+        config=config,
     )
 
 

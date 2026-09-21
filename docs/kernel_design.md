@@ -165,6 +165,7 @@ passes can optimize:
 5. Multiply by activation.
 6. Accumulate in FP32.
 
-API: `int4_gemv_fused` / `int4_gemv_fused_from_qw`. See
-[quantization.md](quantization.md) and
+API: `int4_gemv_fused` / `int4_gemv_fused_from_qw` with optional `config=`.
+Compile-time parameters: [kernel_config.md](kernel_config.md).
+See also [quantization.md](quantization.md) and
 [experiments/int4_gemv_granularity.md](experiments/int4_gemv_granularity.md).

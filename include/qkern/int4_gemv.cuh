@@ -1,5 +1,7 @@
 #pragma once
 
+#include "qkern/int4_gemv_config.cuh"
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -11,42 +13,40 @@ namespace qkern {
 //
 // Packed storage (Phase-1):
 //   W_q[n, i] uint8; low nibble = q[n, 2*i], high = q[n, 2*i+1]
-//   (high nibble may be zero padding when K is odd).
 //
-// Per-tensor:  y[n] = scale * Σ_k float(q[n,k]) * float(x[k])
-// Per-channel: y[n] = scales[n] * Σ_k float(q[n,k]) * float(x[k])
-// Per-group:   y[n] = Σ_k scales[n, floor(k/gs)] * float(q[n,k]) * float(x[k])
-//
-// Kernels are correctness-first (1 thread / row). Structure leaves hooks for
-// later: staged scale loads, cheaper group indexing, vectorized W/x loads,
-// register tiling, and shared-memory reuse of x / scales.
+// Compile-time configs: see int4_gemv_config.cuh (BLOCK_N / BLOCK_K / VEC_SIZE /
+// NUM_STAGES). Default config preserves the original scalar, no-smem path.
+// BLOCK_M is fixed at 1 for this GEMV mapping.
 
 void launch_int4_gemv_per_tensor_fused(
-    const std::uint8_t* W_q_packed,  // [N, ceil(K/2)]
-    const __half* x,                 // [K]
-    float* y,                        // [N]
+    const std::uint8_t* W_q_packed,
+    const __half* x,
+    float* y,
     float scale,
     int N,
     int K,
+    Int4GemvConfigId config = Int4GemvConfigId::Default,
     cudaStream_t stream = nullptr);
 
 void launch_int4_gemv_per_channel_fused(
     const std::uint8_t* W_q_packed,
     const __half* x,
     float* y,
-    const float* scales,  // [N]
+    const float* scales,
     int N,
     int K,
+    Int4GemvConfigId config = Int4GemvConfigId::Default,
     cudaStream_t stream = nullptr);
 
 void launch_int4_gemv_per_group_fused(
     const std::uint8_t* W_q_packed,
     const __half* x,
     float* y,
-    const float* scales,  // [N, num_groups] row-major
+    const float* scales,
     int N,
     int K,
     int group_size,
+    Int4GemvConfigId config = Int4GemvConfigId::Default,
     cudaStream_t stream = nullptr);
 
 }  // namespace qkern
