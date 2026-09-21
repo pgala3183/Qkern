@@ -40,7 +40,8 @@ Distinguish logical bandwidth from Nsight Compute hardware counters.
 | 2 | **done** | Naive handwritten CUDA FP16 GEMV + baseline benchmark |
 | 2.1 | **done** | Variant framework + first opt: `x_smem` activation caching |
 | 2.2 | **done** | Safe `__half2` vectorized loads (`vec2`) |
-| 3+ | pending | Further single-step FP16 opts, INT8/INT4 CUDA, autotuner |
+| 3 | **done** | INT8 weight-only fused GEMV (per-tensor) |
+| 4+ | pending | INT8 per-channel/group, INT4 fused, further opts, autotuner |
 
 ## Phase 2 / 2.1 (CUDA FP16 GEMV)
 
@@ -54,7 +55,8 @@ python benchmarks/benchmark_fp16_gemv_opt.py
 - `fp16_gemv_naive` — preserved Phase-2 baseline
 - `fp16_gemv_x_smem` — shared-memory tiles of `x` only ([experiment](docs/experiments/fp16_gemv_x_smem.md))
 - `fp16_gemv_vec2` — safe `__half2` loads + scalar fallback ([experiment](docs/experiments/fp16_gemv_vec2.md))
-- `fp16_gemv(..., variant=...)` — dispatch
+- `int8_gemv_fused` / `int8_gemv_unfused` — per-tensor INT8 ([experiment](docs/experiments/int8_gemv_fused.md))
+- `fp16_gemv(..., variant=...)` — FP16 dispatch
 - Design notes: [docs/kernel_design.md](docs/kernel_design.md)
 
 ## Phase 1 (PyTorch references)

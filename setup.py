@@ -43,6 +43,7 @@ ext_modules = [
             str(ROOT / "src" / "kernels" / "fp16_gemv_x_smem.cu"),
             str(ROOT / "src" / "kernels" / "fp16_gemv_vec2.cu"),
             str(ROOT / "src" / "kernels" / "fp16_gemv_dispatch.cpp"),
+            str(ROOT / "src" / "kernels" / "int8_gemv.cu"),
         ],
         include_dirs=[str(ROOT / "include")],
         extra_compile_args={
