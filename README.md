@@ -36,7 +36,20 @@ Distinguish logical bandwidth from Nsight Compute hardware counters.
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 0 | **done** | Repo scaffold, CUDA smoke, NVRTC check, Python diagnostics |
-| 1+ | pending | PyTorch reference, kernels, autotuner, benchmarks |
+| 1 | **done** | PyTorch FP16 GEMV reference, INT8/INT4 quantize+pack, tests, docs |
+| 2+ | pending | Handwritten CUDA kernels, autotuner, benchmarks |
+
+## Phase 1 (PyTorch references)
+
+```powershell
+python -m pip install -e ".[dev]"
+python -m pytest -q
+python examples/phase1_examples.py
+```
+
+See [docs/quantization.md](docs/quantization.md) for scale/rounding/packing definitions.
+No custom CUDA kernels in this phase.
+
 
 ## Measured environment (Phase 0)
 
@@ -58,7 +71,8 @@ Captured on the development machine used for the initial smoke run
 **Known toolchain quirks on this host**
 
 - System `CUDA_PATH` / `CUDA_PATH_V13_3` may point at `bin` or `libnvvp`. The Phase 0 script overrides them to the real toolkit root for the build process.
-- A CUDA-enabled PyTorch wheel is still required before Phase 1 reference / correctness work can exercise the GPU from Python.
+- A CUDA-enabled PyTorch wheel is still required before **GPU** PyTorch paths.
+  Phase 1 reference tests run on CPU PyTorch.
 
 ## Quick start (Phase 0)
 
